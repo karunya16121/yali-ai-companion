@@ -1,12 +1,13 @@
 import { motion } from "motion/react";
 
-export type OrbState = "idle" | "listening" | "thinking" | "speaking";
+export type OrbState = "idle" | "listening" | "thinking" | "speaking" | "interrupted";
 
 const RING = {
   idle: "oklch(0.7 0.06 250 / 35%)",
   listening: "oklch(0.78 0.16 190 / 75%)",
   thinking: "oklch(0.8 0.18 90 / 70%)",
   speaking: "oklch(0.72 0.19 320 / 80%)",
+  interrupted: "oklch(0.8 0.14 40 / 70%)",
 };
 
 export function YaliOrb({

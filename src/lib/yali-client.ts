@@ -94,7 +94,10 @@ export function errorMessage(status: number, detail: string) {
 /* ------------------------------ streaming TTS ------------------------------ */
 
 export type Speaker = {
+  /** Speak text now, cancelling anything currently queued. */
   speak: (text: string) => Promise<void>;
+  /** Append a chunk to the current utterance (sequential, gapless). */
+  queue: (text: string) => Promise<void>;
   stop: () => void;
   /** 0..1 loudness of what YALI is currently saying */
   level: () => number;
@@ -105,10 +108,12 @@ export function createSpeaker(voice = "alloy"): Speaker {
   let ctx: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let gain: GainNode | null = null;
-  let controller: AbortController | null = null;
   let sources: AudioBufferSourceNode[] = [];
+  const controllers = new Set<AbortController>();
   let playhead = 0;
   let active = false;
+  let session = 0;
+  let chain: Promise<void> = Promise.resolve();
   let data: Uint8Array | null = null;
 
   const ensureCtx = async () => {
@@ -126,9 +131,10 @@ export function createSpeaker(voice = "alloy"): Speaker {
   };
 
   const stop = () => {
+    session += 1;
     active = false;
-    controller?.abort();
-    controller = null;
+    for (const c of controllers) c.abort();
+    controllers.clear();
     for (const s of sources) {
       try {
         s.stop();
@@ -138,19 +144,19 @@ export function createSpeaker(voice = "alloy"): Speaker {
     }
     sources = [];
     playhead = 0;
+    chain = Promise.resolve();
   };
 
-  const speak = async (text: string) => {
-    if (!text.trim()) return;
-    stop();
+  const render = async (text: string, mySession: number) => {
+    if (!text.trim() || mySession !== session) return;
     const audio = await ensureCtx();
+    const controller = new AbortController();
+    controllers.add(controller);
     active = true;
-    controller = new AbortController();
-    const signal = controller.signal;
     let pending = new Uint8Array(0);
 
     const push = (incoming: Uint8Array) => {
-      if (!active) return;
+      if (mySession !== session) return;
       const bytes = new Uint8Array(pending.length + incoming.length);
       bytes.set(pending);
       bytes.set(incoming, pending.length);
@@ -164,45 +170,61 @@ export function createSpeaker(voice = "alloy"): Speaker {
       const src = audio.createBufferSource();
       src.buffer = buffer;
       src.connect(gain!);
-      playhead = playhead === 0 ? audio.currentTime + 0.06 : Math.max(playhead, audio.currentTime);
+      playhead = playhead === 0 ? audio.currentTime + 0.08 : Math.max(playhead, audio.currentTime);
       src.start(playhead);
       playhead += buffer.duration;
       sources.push(src);
       src.onended = () => {
         sources = sources.filter((s) => s !== src);
-        if (sources.length === 0) active = false;
+        if (sources.length === 0 && controllers.size === 0) active = false;
       };
     };
 
-    const res = await fetch("/api/speech", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, voice }),
-      signal,
-    });
-    if (!res.ok || !res.body) {
-      active = false;
-      const detail = await res.text().catch(() => "");
-      throw new Error(errorMessage(res.status, detail));
-    }
-
-    for await (const chunk of sseLines(res, signal)) {
-      if (!active) break;
-      try {
-        const payload = JSON.parse(chunk) as { type?: string; audio?: string };
-        if (payload.type !== "speech.audio.delta" || !payload.audio) continue;
-        const bin = atob(payload.audio);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        push(bytes);
-      } catch {
-        /* ignore */
+    try {
+      const res = await fetch("/api/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice }),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(errorMessage(res.status, detail));
       }
+      for await (const chunk of sseLines(res, controller.signal)) {
+        if (mySession !== session) break;
+        try {
+          const payload = JSON.parse(chunk) as { type?: string; audio?: string };
+          if (payload.type !== "speech.audio.delta" || !payload.audio) continue;
+          const bin = atob(payload.audio);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          push(bytes);
+        } catch {
+          /* ignore */
+        }
+      }
+    } finally {
+      controllers.delete(controller);
+      if (sources.length === 0 && controllers.size === 0) active = false;
     }
+  };
+
+  const queue = (text: string) => {
+    const mySession = session;
+    const next = chain.then(() => render(text, mySession)).catch(() => {});
+    chain = next;
+    return next;
+  };
+
+  const speak = (text: string) => {
+    stop();
+    return queue(text);
   };
 
   return {
     speak,
+    queue,
     stop,
     speaking: () => active,
     level: () => {
@@ -214,6 +236,28 @@ export function createSpeaker(voice = "alloy"): Speaker {
     },
   };
 }
+
+/** Splits streamed text into speakable chunks at sentence boundaries. */
+export function takeSpeakableChunk(buffer: string, minLength = 40) {
+  const match = /[.!?…]+["')\]]*\s|\n+/g;
+  let cut = -1;
+  let m: RegExpExecArray | null;
+  while ((m = match.exec(buffer))) {
+    if (m.index + m[0].length >= minLength) {
+      cut = m.index + m[0].length;
+      break;
+    }
+    cut = m.index + m[0].length;
+  }
+  if (cut < 0 || cut < minLength) {
+    if (buffer.length < 220) return null;
+    const comma = buffer.lastIndexOf(", ");
+    if (comma > minLength) cut = comma + 2;
+    else return null;
+  }
+  return { chunk: buffer.slice(0, cut).trim(), rest: buffer.slice(cut) };
+}
+
 
 /* --------------------------- speech recognition ---------------------------- */
 
