@@ -26,7 +26,13 @@ export const LANGS = [
   { value: "en-US", label: "English — US (en-US)" },
 ];
 
-export const VOICES = ["alloy", "verse", "coral", "sage", "shimmer"];
+export const VOICES = [
+  { value: "alloy", label: "Alloy", description: "Balanced" },
+  { value: "verse", label: "Verse", description: "Bright" },
+  { value: "coral", label: "Coral", description: "Warm" },
+  { value: "sage", label: "Sage", description: "Calm" },
+  { value: "shimmer", label: "Shimmer", description: "Girl voice" },
+];
 
 const KEYS = {
   memories: "yali.memories.v1",

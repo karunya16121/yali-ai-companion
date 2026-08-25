@@ -16,7 +16,7 @@ import {
   type Listener,
   type Speaker,
 } from "@/lib/yali-client";
-import { useConversation, useMemories, useSettings } from "@/lib/yali-store";
+import { VOICES, useConversation, useMemories, useSettings } from "@/lib/yali-store";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -49,7 +49,7 @@ const HINTS = [
 const TURN_SILENCE_MS = 1150;
 
 function VoicePage() {
-  const { settings } = useSettings();
+  const { settings, update } = useSettings();
   const { memories, add } = useMemories();
   const { messages, append, patchLast } = useConversation();
 
@@ -80,6 +80,11 @@ function VoicePage() {
   settingsRef.current = settings;
 
   useEffect(() => setSupported(Boolean(getRecognitionCtor())), []);
+
+  useEffect(() => {
+    speakerRef.current?.stop();
+    speakerRef.current = null;
+  }, [settings.voice]);
 
   const getSpeaker = useCallback(() => {
     if (!speakerRef.current) speakerRef.current = createSpeaker(settingsRef.current.voice);
@@ -361,6 +366,25 @@ function VoicePage() {
           </button>
         )}
       </div>
+
+      <label className="glass mt-5 flex items-center gap-3 rounded-2xl px-4 py-3 text-left">
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-medium">YALI voice</span>
+          <span className="block text-[11px] text-muted-foreground">Choose how YALI sounds</span>
+        </span>
+        <select
+          value={settings.voice}
+          onChange={(event) => update({ voice: event.target.value })}
+          className="rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-primary/40"
+          aria-label="YALI voice"
+        >
+          {VOICES.map((voice) => (
+            <option key={voice.value} value={voice.value}>
+              {voice.label} · {voice.description}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {!supported && (
         <p className="mt-4 text-xs text-destructive">
